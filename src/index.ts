@@ -1,59 +1,69 @@
+import express, { Request, Response } from 'express';
 import puppeteer from 'puppeteer';
-import { Browser } from 'puppeteer';
 
-async function scrapeWebsite(): Promise<void> {
-   let browser: Browser | undefined;
+const app = express();
+const port = process.env.PORT || 3000;
 
-   try {
-      console.log('Starting browser...');
+// Middleware to parse JSON bodies
+app.use(express.json());
 
-      // Launch browser
-      browser = await puppeteer.launch({
-         headless: true,
-         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
-         ]
+// API endpoint to generate image or PDF
+app.post('/generate', async (req: Request, res: Response) => {
+  const { url, format = 'image' } = req.body;
+
+  // Validate input
+  if (!url || !url.startsWith('http')) {
+    return res.status(400).json({ error: 'Valid URL is required' });
+  }
+  if (!['image', 'pdf'].includes(format)) {
+    return res.status(400).json({ error: 'Invalid format. Use "image" or "pdf"' });
+  }
+
+  try {
+    // Launch Puppeteer
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'], // Required for Railway
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+    });
+    const page = await browser.newPage();
+
+    // Set viewport for consistent rendering
+    await page.setViewport({ width: 1280, height: 720 });
+
+    // Navigate to the URL
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    if (format === 'pdf') {
+      // Generate PDF
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
       });
+      await browser.close();
 
-      // Create new page
-      const page = await browser.newPage();
+      // Send PDF response
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=output.pdf');
+      return res.send(pdfBuffer);
+    } else {
+      // Generate screenshot (default)
+      const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true });
+      await browser.close();
 
-      // Set viewport size
-      await page.setViewport({ width: 1280, height: 720 });
+      // Send image response
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Content-Disposition', 'attachment; filename=screenshot.png');
+      return res.send(screenshotBuffer);
+    }
+  } catch (error) {
+    console.error('Error generating output:', error);
+    await browser?.close();
+    return res.status(500).json({ error: 'Failed to generate output' });
+  }
+});
 
-      // Navigate to website
-      console.log('Navigating to website...');
-      await page.goto('https://railway.app', {
-         waitUntil: 'networkidle2'
-      });
-
-      // Get page title
-      const title = await page.title();
-      console.log('Page title:', title);
-
-      // Try to get text content from h1 if exists
-      try {
-         const heading = await page.$eval('h1', el => (el as HTMLElement).textContent);
-         console.log('Main heading:', heading);
-      } catch (headingError) {
-         console.log('Could not find h1 element');
-      }
-
-      console.log('Scraping completed successfully!');
-
-   } catch (error) {
-      console.error('Error occurred:', error);
-   } finally {
-      // Always close the browser
-      if (browser) {
-         await browser.close();
-         console.log('Browser closed');
-      }
-   }
-}
-
-// Run the scraping function
-scrapeWebsite().catch(console.error);
-
+// Start the server
+app.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
+});
